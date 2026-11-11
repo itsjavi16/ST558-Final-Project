@@ -1,0 +1,9 @@
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+.Renviron
+/.quarto/
+**/*.quarto_ipynb
+*.tar
+*.tar.gz
