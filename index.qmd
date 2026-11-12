@@ -3,3 +3,64 @@ title: "Predicting Melbourne Housing Prices"
 author: "Javi Brito"
 format: html
 ---
+
+## Introduction
+
+
+```{r libraries}
+library(tidyverse)
+library(tidymodels)
+library(janitor)
+```
+
+```{r data}
+housing <- read_csv("data/Melbourne_housing_FULL.csv",
+                    na = c("", "NA", "#N/A")) |>
+  # make column names lowercase snake_case
+  clean_names() |>
+  distinct() |>
+  # we chose price is the response, then thes ales without a price are not useful for our analysis
+  # we can drop them, so 3 rows with no region information
+  filter(!is.na(price), !is.na(regionname)) |>
+  mutate(
+    type = factor(type, levels = c("h", "u", "t"),
+                  labels = c("House", "Unit", "Townhouse")),
+    method = factor(method,
+                    levels = c("S", "SP", "PI", "VB", "SA"),
+                    labels = c("Sold", "Sold prior", "Passed in",
+                               "Vendor bid", "Sold after auction")),
+    # combine the three small "Victoria" regions into one level
+    region_group = if_else(str_detect(regionname, "Victoria"),
+                           "Regional Victoria", regionname) |>
+      factor()
+  ) |>
+  # keep the response and candidate predictors
+  select(price, rooms, distance, bathroom, car,
+         type, method, region_group)
+
+glimpse(housing)
+```
+
+
+```{r missing-value}
+# number of missing values in each column
+colSums(is.na(housing))
+```
+
+## Train/Test Split
+
+
+```{r split}
+set.seed(558)
+housing_split <- initial_split(housing, prop = 0.7)
+housing_training <- training(housing_split)
+housing_test <- testing(housing_split)
+
+housing_split
+```
+
+
+```{r cv-folds}
+housing_folds <- vfold_cv(housing_training, v = 5)
+housing_folds
+```
