@@ -64,3 +64,18 @@ housing_split
 housing_folds <- vfold_cv(housing_training, v = 5)
 housing_folds
 ```
+
+## Metric
+
+Since we chose price as the response, we will use root mean squared error (RMSE) as the metric to evaluate our regression models. Let us define the RMSE as:
+
+$$
+\text{RMSE} = \sqrt{\frac{1}{n}\sum_{i=1}^{n}\left(y_i - \hat{y}_i\right)^2}
+$$
+where $y_i$ is the actual sale price and $\hat{y}_i$ is the model's predicted
+price for the $i$th sale.
+
+
+```{r metrics}
+housing_metrics <- metric_set(rmse, mae)
+```
