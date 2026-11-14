@@ -79,3 +79,20 @@ price for the $i$th sale.
 ```{r metrics}
 housing_metrics <- metric_set(rmse, mae)
 ```
+
+## Recipe
+
+
+```{r recipe}
+housing_recipe <- recipe(price ~ rooms + distance + bathroom + car + type + method + region_group, data = housing_training) |>
+  step_impute_median(bathroom, car)
+
+housing_recipe
+```
+
+```{r recipe check}
+housing_recipe |>
+  prep() |>
+  bake(new_data = NULL) |>
+  map_int(\(x) sum(is.na(x)))
+```
