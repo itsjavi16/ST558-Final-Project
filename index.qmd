@@ -10,6 +10,7 @@ format: html
 ```{r libraries}
 library(tidyverse)
 library(tidymodels)
+library(ranger)
 library(janitor)
 ```
 
@@ -98,7 +99,8 @@ housing_recipe |>
 ```
 
 ## Regression Tree
-
+### What is a regression tree?
+### Firring a regression tree model
 
 ```{r tree-spec}
 tree_spec <- decision_tree(cost_complexity = tune(), 
@@ -142,4 +144,54 @@ tree_best_params
 
 tree_final_wkf <- tree_wkf |>
   finalize_workflow(tree_best_params)
+```
+
+## Random Forest
+### What is a random forest?
+### Fitting a random forest model
+
+```{r rf-spec}
+rf_spec <- rand_forest(mtry = tune(), trees = 500) |>
+  set_engine("ranger",
+             importance = "impurity",
+             num.threads = parallel::detectCores()) |>
+  set_mode("regression")
+
+rf_wkf <- workflow() |>
+  add_recipe(housing_recipe) |>
+  add_model(rf_spec)
+```
+
+
+```{r rf-grid}
+#| cache: true
+rf_grid <- tibble(mtry = 1:7) # every possible number of predictors to consider at each split
+
+rf_fits <- rf_wkf |>
+  tune_grid(resamples = housing_folds,
+            grid = rf_grid,
+            metrics = housing_metrics)
+```
+
+
+```{r rf-results}
+rf_fits |>
+  collect_metrics() |>
+  filter(.metric == "rmse") |>
+  arrange(mean)
+```
+
+
+```{r rf-plot}
+autoplot(rf_fits) +
+  labs(title = "Random Forest: Cross-Validation Results")
+```
+
+
+```{r rf-best}
+rf_best_params <- select_best(rf_fits, metric = "rmse")
+rf_best_params
+
+rf_final_wkf <- rf_wkf |>
+  finalize_workflow(rf_best_params)
 ```
