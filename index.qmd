@@ -6,15 +6,30 @@ format: html
 
 ## Introduction
 
+This analysis uses the [Melbourne Housing Market dataset on Kaggle](https://www.kaggle.com/datasets/anthonypino/melbourne-housing-market), which contains residential property sales in Melbourne, Australia, from January 2016 to March 2018. Each sale records the price along with characteristics of the property and the sale, such as the property type, number of rooms, distance from the central business district (CBD), region, and sale method.
+
+The main focus is to predict a property's sale **price** fro these features. 
+Two families of models are compared, a regression tree and a random forest, with each tuned using 5-fold cross-validation on a training set. The bestmodelof each type is then compared on a held-out test set, and the overall winner is fit to the full data and made available through an API.
 
 ```{r libraries}
+#| message: false
 library(tidyverse)
 library(tidymodels)
 library(ranger)
 library(janitor)
 ```
 
+## Data
+
+The data is read in from the raw Kaggle file stored in the `data/` folder in the repositoy and cleaned the same way as in Project 2. 
+Sales without a recorded price are removed because price is the response variable. 
+Three rows with no region information and one duplicate row are also removed. 
+The single-letter codes for property type and sale method are converted to readable labels, 
+and the three small regional Victoria areas (about 430 sales combined) are grouped into one
+"Regional Victoria" level. Only the response and the candidate predictors are kept for modeling.
+
 ```{r data}
+#| message: false
 housing <- read_csv("data/Melbourne_housing_FULL.csv",
                     na = c("", "NA", "#N/A")) |>
   # make column names lowercase snake_case
@@ -50,6 +65,7 @@ colSums(is.na(housing))
 
 ## Train/Test Split
 
+The data is split into a training set (70% of sales) and test sets (30%). The models are tuned and chosen using only the traning set. The test set is held back until the end, so it returns an decent estimate of how well the final models predict sales they have never seen. A seed is set so the split and the results are reproducible.
 
 ```{r split}
 set.seed(558)
@@ -60,6 +76,7 @@ housing_test <- testing(housing_split)
 housing_split
 ```
 
+In order to choose tuning parameters within each model family, the training set is further divided into 5 folds for cross-validation. Each candidaite model is fit 5 times, each time 4 folds and evaluated on the remaining fold, and its performance is average across the 5 held-out folds.
 
 ```{r cv-folds}
 housing_folds <- vfold_cv(housing_training, v = 5)
@@ -73,9 +90,15 @@ Since we chose price as the response, we will use root mean squared error (RMSE)
 $$
 \text{RMSE} = \sqrt{\frac{1}{n}\sum_{i=1}^{n}\left(y_i - \hat{y}_i\right)^2}
 $$
-where $y_i$ is the actual sale price and $\hat{y}_i$ is the model's predicted
-price for the $i$th sale.
+where $y_i$ is the actual sale price and $\hat{y}_i$ is the model's predicted price for the $i$th sale.
 
+RMSE is useful for this prediction problem as for these main reasons:
+- This is the standard metric for regression models and since both models are regressions models, makes the comparison straightforward.
+- RMSE is measured in Australian dollars, so it can be read directly as a typical size of prediction eror, i.e "the model's prediction are off by about $X on average".
+- It penalizes large errors more heavily, meaning that errors are squared before averaging, a prediction that is off by $500,000 counts far more than several predictions that are each off by $50,000. For house prices, large misses are the most costly mistakes, so we want a metric that punishes them.
+
+The mean absolute error (MAE), the average size of the errors withouts quaring, is also reported as a secondary metric because it is less influenced by a few very expensive properties. 
+However, RMSE is used to select the best tuning parameters and the final model.
 
 ```{r metrics}
 housing_metrics <- metric_set(rmse, mae)
@@ -83,6 +106,15 @@ housing_metrics <- metric_set(rmse, mae)
 
 ## Recipe
 
+A recipe defines the model formula and any pre-processing steps. Both models families will use the same recipe so they are compared on equal footing.
+The response variable is `price` and the seven predictors are:
+- `rooms`: number of rooms
+- `distance`: distance from the Melbourne CBD (km)
+- `bathroom`: number of bathrooms
+- `car`: number of car spaces
+- `type`: property type (House, Unit, Townhouse)
+- `method`: sale method
+- `region_group`: region of Melbourne
 
 ```{r recipe}
 housing_recipe <- recipe(price ~ rooms + distance + bathroom + car + type + method + region_group, data = housing_training) |>
@@ -90,6 +122,8 @@ housing_recipe <- recipe(price ~ rooms + distance + bathroom + car + type + meth
 
 housing_recipe
 ```
+
+To verify the recipe, it can be prepped on the training data and applied to see that the misssing values have been filled in as shown below. 
 
 ```{r recipe check}
 housing_recipe |>
@@ -99,8 +133,24 @@ housing_recipe |>
 ```
 
 ## Regression Tree
+
 ### What is a regression tree?
-### Firring a regression tree model
+
+A regression tree predicts a numeric response by splitting the predictor space into regions and predicting the average response within each region. The tree is built by:
+1. Starting with all of the training data, so the algorithm considers every predictor and every possible split point. Then, it chooses the single split that most reduces the residual sum of squares (RSS), the total squared difference between each sale's price and the average price in its group.
+2.This splitting process is repeated within each other of the two resulting groups, and then within their group, and so on. This is defined as the greedy process which always chossing the best split at the current step is called a recursive binary splitting.
+3. The splitting algorithm stops when a the stopping rule is reached, such as a maximum depth or a minimum number of observations in a node. Thie final group are known as the terminal nodes (leaves), and the prediction for a new sale is the mean price of the training sales in the leaf it falls into.
+
+Regression tree are easy to interpret, since they follow the if/else rules to classify the nodes. They are able to handle categorical predictors and interactions naturally and they do not need scaling of the predictors. Their main weakness is that they are high variance, where a large tree can fit the training data very closely (overfitting), and a small change in the data can produce a very different tree. There is a way to control this, where the tree needs is usually grown large and then **pruned** back using a cost-complexity penalty, which adds a cost for each terminal node. A larger penalty returns a smaller simpler tree.
+
+The tuning parameters are tuned in here:
+- `cost_complexity`: the pruning penalty. Small values allow large, complex
+  trees; large values prune the tree to just a few splits.
+- `tree_depth`: the maximum number of splits from the root to any leaf.
+
+The minimum number of observations required in a node to split it (`min_n`) is held at 20.
+
+### Fitting a regression tree model
 
 ```{r tree-spec}
 tree_spec <- decision_tree(cost_complexity = tune(), 
@@ -114,6 +164,7 @@ tree_wkf <- workflow() |>
   add_model(tree_spec)
 ```
 
+The tuning grid tries 5 values of the cost-complexity penalty (on a log scale, from 0.00001 to 0.1) crossed with 6 maximum depths, for 30 candidate trees. Each one is evaluated with 5-fold cross-validation.
 
 ```{r tree-grid}
 tree_grid <- expand_grid(cost_complexity = 10^seq(-5, -1, length.out = 5),
@@ -138,6 +189,8 @@ autoplot(tree_fits) +
   labs(title = "Regression Tree Tuning Results")
 ```
 
+The best tree is the combination of tuning parameters with the lowest cross-validation RMSE. The workflow is then finalized with these values.
+
 ```{r tree-best}
 tree_best_params <- select_best(tree_fits, metric ="rmse")
 tree_best_params
@@ -147,7 +200,28 @@ tree_final_wkf <- tree_wkf |>
 ```
 
 ## Random Forest
+
 ### What is a random forest?
+
+A single regression tree is easy to interpret, but it has high variance as explained previously. A random forest reduces this variance by fitting **many** trees and averaging their predictions. 
+A random forest builds on an idea called **bagging** (bootstrap aggregation):
+1. Take a bootstrap sample of the training data: a sample of the same size,
+   drawn with replacement, so some sales appear more than once and others are
+   left out.
+2. Fit a large, unpruned regression tree to that bootstrap sample.
+3. Repeat this many times (here, 500 trees).
+4. To predict a new sale, run it through every tree and **average** the 500 predicted prices.
+
+Unlike a single regression tree, each individual tree is low bias but high variance. Averaging many of them keeps the low bias while greatly reducing the variance.
+
+The random forest adds one more change to bagging, i.e., at each split only a random subset of `mtry` predictors is considered instead of all predictors. With plain bagging, if one predictor is very strong (e.g., `type` or `rooms`), almost all trees would use it for the first split, and the trees would look similar. Their predictions would be highly correlated, and averaging correlated predictions does not reduce variance much. The trees are forced to be different by limiting each split to a random subset of predictors. (it decorrelates them); thus, averaging them reduces the variance much more. 
+
+The main tuning parameter is the number of predictors considered at each split, `mtry:
+- The parameter `mtry` = 7 (all predictors) is equivalent to bagging. 
+- Smaller values of `mtry` will produce trees that are more variable and less correlated, but each individual tree may be less accurate. 
+
+A random forest will usually make a lot more predictions than a single tree. correctly, but it loses the simple, interpretable set of rules that a single tree provides. It also takes longer to set up. Here we try all possible values from 1 to 7, while the number of trees and minimum node size are kept at 500 and default, respectively.
+
 ### Fitting a random forest model
 
 ```{r rf-spec}
@@ -187,6 +261,7 @@ autoplot(rf_fits) +
   labs(title = "Random Forest: Cross-Validation Results")
 ```
 
+The best random forest is the value of `mtry` with the lowest cross-validation RMSE.
 
 ```{r rf-best}
 rf_best_params <- select_best(rf_fits, metric = "rmse")
@@ -194,4 +269,63 @@ rf_best_params
 
 rf_final_wkf <- rf_wkf |>
   finalize_workflow(rf_best_params)
+```
+
+## Final Model Selection
+
+The best regression tree and the best random forest (with the tuning parameters chosen by cross-validation) are now each fit to the **entire training set** and evaluated on the **test set**. The `last_fit()` function
+does both steps: it fits the finalized workflow on the training portion of `housing_split` and computes the metrics on the test portion, data that played no part in fitting or tuning either model.
+
+```{r last-fit}
+tree_final_fit <- tree_final_wkf |>
+  last_fit(housing_split, metrics = housing_metrics)
+
+rf_final_fit <- rf_final_wkf |>
+  last_fit(housing_split, metrics = housing_metrics)
+```
+
+
+```{r test-comparison}
+# test set RMSE and MAE for both models
+bind_rows(
+  tree_final_fit |> collect_metrics() |> mutate(model = "Regression tree"),
+  rf_final_fit |> collect_metrics() |> mutate(model = "Random forest")
+) |>
+  select(model, .metric, .estimate) |>
+  pivot_wider(names_from = .metric, values_from = .estimate)
+```
+
+```{r test-predictions-plot}
+# predicted vs. actual sale prices on the test set
+bind_rows(
+  tree_final_fit |> collect_predictions() |> mutate(model = "Regression tree"),
+  rf_final_fit |> collect_predictions() |> mutate(model = "Random forest")
+) |>
+  ggplot(aes(x = price, y = .pred)) +
+  geom_point(alpha = 0.2) +
+  geom_abline(color = "red") +
+  facet_wrap(~ model) +
+  scale_x_continuous(labels = scales::label_dollar()) +
+  scale_y_continuous(labels = scales::label_dollar()) +
+  labs(title = "Predicted vs. Actual Sale Price on the Test Set",
+       x = "Actual price (AUD)", y = "Predicted price (AUD)")
+```
+
+
+The random forest has the lower test set RMSE ($363,100 vs. $375,047 for the regression tree) and the lower MAE ($208,764 vs. $219,768), so it is the overall best model. On new sales, its predictions are off by about $363,000
+as measured by RMSE, while the typical absolute error is about $209,000. The gap between the two metrics shows that a smaller number of very expensive properties have large errors, which RMSE penalizes more heavily. The
+forest's improvement over the single tree is modest, about 3% lower RMSE, which suggests the seven predictors capture much of the structure even in a single deep tree, but averaging many decorrelated trees still predicts new
+sales more accurately.
+
+
+
+### Fitting the best model to the full data
+
+The overall best model is fit to the **entire data set** (training and test sets combined), so it uses all of the available sales. This is the model used by the API.
+
+```{r final-model}
+final_model <- rf_final_wkf |>
+  fit(data = housing)
+
+final_model
 ```
