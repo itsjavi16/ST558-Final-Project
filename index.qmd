@@ -1,7 +1,11 @@
 ---
 title: "Predicting Melbourne Housing Prices"
 author: "Javi Brito"
-format: html
+format:
+  html:
+    theme:
+      light: flatly
+      dark: darkly
 ---
 
 ## Introduction
