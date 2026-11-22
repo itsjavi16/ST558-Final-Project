@@ -7,3 +7,5 @@
 **/*.quarto_ipynb
 *.tar
 *.tar.gz
+index_cache/
+index_files/
