@@ -12,8 +12,8 @@ format:
 
 This analysis uses the [Melbourne Housing Market dataset on Kaggle](https://www.kaggle.com/datasets/anthonypino/melbourne-housing-market), which contains residential property sales in Melbourne, Australia, from January 2016 to March 2018. Each sale records the price along with characteristics of the property and the sale, such as the property type, number of rooms, distance from the central business district (CBD), region, and sale method.
 
-The main focus is to predict a property's sale **price** fro these features. 
-Two families of models are compared, a regression tree and a random forest, with each tuned using 5-fold cross-validation on a training set. The bestmodelof each type is then compared on a held-out test set, and the overall winner is fit to the full data and made available through an API.
+The main focus is to predict a property's sale **price** for these features. 
+Two families of models are compared, a regression tree and a random forest, with each tuned using 5-fold cross-validation on a training set. The best model of each type is then compared on a held-out test set, and the overall winner is fit to the full data and made available through an API.
 
 ```{r libraries}
 #| message: false
@@ -25,12 +25,8 @@ library(janitor)
 
 ## Data
 
-The data is read in from the raw Kaggle file stored in the `data/` folder in the repositoy and cleaned the same way as in Project 2. 
-Sales without a recorded price are removed because price is the response variable. 
-Three rows with no region information and one duplicate row are also removed. 
-The single-letter codes for property type and sale method are converted to readable labels, 
-and the three small regional Victoria areas (about 430 sales combined) are grouped into one
-"Regional Victoria" level. Only the response and the candidate predictors are kept for modeling.
+The data is read in from the raw Kaggle file stored in the `data/` folder in the repository and cleaned the same way as in Project 2. 
+Sales without a recorded price are removed because price is the response variable. Three rows with no region information and one duplicate row are also removed.  The single-letter codes for property type and sale method are converted to readable labels,  and the three small regional Victoria areas (about 430 sales combined) are grouped into one "Regional Victoria" level. Only the response and the candidate predictors are kept for modeling.
 
 ```{r data}
 #| message: false
@@ -66,6 +62,119 @@ glimpse(housing)
 # number of missing values in each column
 colSums(is.na(housing))
 ```
+
+## Exploratory Data Analysis
+
+Before modeling, the data is explored to understand the distribution of the response, how each predictor relates to price, and what this means for the choice of models. This exploration uses the full cleaned data set.
+
+### Distribution of sale price
+
+```{r eda-price-summary}
+housing |>
+  summarize(n = n(),
+            mean = mean(price),
+            median = median(price),
+            sd = sd(price),
+            min = min(price),
+            max = max(price))
+```
+
+```{r eda-price-hist}
+housing |>
+  ggplot(aes(x = price)) +
+  geom_histogram(bins = 60, fill = "steelblue") +
+  scale_x_continuous(labels = scales::label_dollar()) +
+  labs(title = "Distribution of Sale Price",
+       x = "Sale price (AUD)", y = "Number of sales")
+```
+
+Sale prices range from $85,000 to $11.2 million. The distribution is strongly right-skewed: the mean ($1,050,210) is well above the median ($870,000), and a small number of very expensive properties create a long right tail. This matters for the metric: RMSE squares the errors, so mispredicting these expensive properties will weigh heavily on it.
+
+### Categorical predictors
+
+```{r eda-cat-counts}
+# one-way tables: how many sales fall in each category
+housing |> 
+  count(type) |> 
+  mutate(percent = round(100 * n / sum(n), 1))
+housing |> 
+  count(region_group) |> 
+  mutate(percent = round(100 * n / sum(n), 1))
+housing |> 
+  count(method) |> 
+  mutate(percent = round(100 * n / sum(n), 1))
+```
+
+```{r eda-type-region-table}
+# two-way table: property type by region
+housing |>
+  count(region_group, type) |>
+  pivot_wider(names_from = type, values_from = n, values_fill = 0)
+```
+
+Houses account for two-thirds of sales, at 68%, with units making up 22% and townhomes 11%. The majority of sales are in the Southern, Northern, and Western Metropolitan regions, with only 428 sales in Regional Victoria.
+
+```{r eda-price-by-cat}
+# price summaries at each level of the categorical predictors
+housing |>
+  group_by(type) |>
+  summarize(n = n(), median_price = median(price), mean_price = mean(price))
+
+housing |>
+  group_by(region_group) |>
+  summarize(n = n(), median_price = median(price), mean_price = mean(price)) |>
+  arrange(median_price)
+```
+
+```{r eda-price-boxplots}
+housing |>
+  ggplot(aes(x = price, y = region_group, fill = type)) +
+  geom_boxplot(outlier.alpha = 0.2) +
+  scale_x_log10(labels = scales::label_dollar()) +
+  labs(title = "Sale Price by Region and Property Type",
+       x = "Sale price (AUD, log scale)", y = "Region",
+       fill = "Property type")
+```
+
+The price is strongly correlated with the property type and the region. The median house sells for $1,015,000 compared to $850,000 for townhomes and $580,000 for units. By region, median prices range from $569,000 in Regional Victoria to $1,250,000 in Southern Metropolitan. The box plot also shows that the gap between property types differs by region, an interaction that tree-based models can capture automatically. The sale method has a weaker relationship with price (medians from $751,000 for "Sold prior" to $970,000 for "Vendor bid").
+
+### Numeric predictors
+
+```{r eda-correlations}
+# correlation of each numeric predictor with price
+housing |>
+  select(rooms, distance, bathroom, car) |>
+  map_dbl(\(x) cor(x, housing$price, use = "complete.obs")) |> # complete.obs = skips missing values from bathroom/car
+  round(2)
+```
+
+```{r eda-price-rooms}
+housing |>
+  filter(rooms <= 6) |>
+  ggplot(aes(x = factor(rooms), y = price)) +
+  geom_boxplot(fill = "steelblue", outlier.alpha = 0.2) +
+  scale_y_log10(labels = scales::label_dollar()) +
+  labs(title = "Sale Price by Number of Rooms (1 to 6)",
+       x = "Number of rooms", y = "Sale price (AUD, log scale)")
+```
+
+```{r eda-price-distance}
+housing |>
+  ggplot(aes(x = distance, y = price, color = type)) +
+  geom_point(alpha = 0.2) +
+  geom_smooth(se = FALSE) +
+  scale_y_log10(labels = scales::label_dollar()) +
+  labs(title = "Sale Price vs. Distance from the CBD",
+       x = "Distance from CBD (km)", y = "Sale price (AUD, log scale)",
+       color = "Property type")
+```
+
+The number of rooms (correlation 0.47) and bathrooms (0.43) have the strongest relationships with price: the median price rises from $390,000 for 1-room properties to $1,550,000 for 5 rooms. Distance from the CBD has a negative relationship (−0.21), with median prices falling from about $977,000 within 5 km to $663,000 beyond 20 km, but the smoothed curves show the relationship is not a straight line and differs by property type. Car spaces have the weakest relationship (0.20).
+
+### Summary
+
+The exploration shows that price is right-skewed, that property type, region, rooms, and bathrooms are strongly related to price, and that the predictors interact. Tree-based models are well suited for this because they directly handle skewed responses and categorical predictors and capture nonlinear relationships and interactions without requiring them to be specified in advance. 
+
 
 ## Train/Test Split
 
