@@ -16,7 +16,7 @@ The main focus is to predict a property's sale **price** for these features.
 Two families of models are compared, a regression tree and a random forest, with each tuned using 5-fold cross-validation on a training set. The best model of each type is then compared on a held-out test set, and the overall winner is fit to the full data and made available through an API.
 
 ```{r libraries}
-#| message: false
+#| include: false
 library(tidyverse)
 library(tidymodels)
 library(ranger)
